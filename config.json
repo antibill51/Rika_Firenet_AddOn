@@ -1,0 +1,11 @@
+{
+  "name": "Rika Firenet",
+  "version": "0.2",
+  "slug": "rikafirenet",
+  "description": "Rika Firenet Plugin",
+  "arch": [ "amd64"],
+  "startup": "before",
+  "boot": "auto",
+  "map": ["config:rw"],
+  "schema": {}
+}
