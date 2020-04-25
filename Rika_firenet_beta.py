@@ -1,4 +1,4 @@
-global clientrika, url_base, url_api, stove
+global clientrika, url_base, url_api, stove, client
 
 import sys
 import time
@@ -19,7 +19,6 @@ import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup # parse page
 
 web_response = ""
-
 def load_config(config_file):
     with open(config_file, 'r') as stream:
         try:
@@ -58,20 +57,26 @@ class send_to_stove(Thread):
 
     def run(set_stove_parameter):
             r = clientrika.post(url_base+url_api+stove+'/controls', set_stove_parameter.data)
-
+            senddata_to_mqtt()
             for counter in range (0,10) :
                 if ('OK' in r.text) == True :
                     print(Fore.WHITE + "Send OK (" + current_time + ")")
+                    #senddata_to_mqtt()
                     return True
                 else :
                     print(Fore.WHITE + 'Send try.. ({}/10)'.format(counter + 1) + " (" + current_time + ")")
                     time.sleep(2)
-            time.sleep(5)
-
 # Get stove information
 def get_stove_information(clientrika, url_base, url_api, stove) :
-    r = clientrika.get(url_base+url_api+stove+'/status?nocache=')
-    return r.json()
+    r = ''
+    while r == '':
+        try:
+            r = clientrika.get(url_base+url_api+stove+'/status?nocache=')
+            return r.json()
+        except:
+            print("Connection refused by the server..")
+            time.sleep(15)
+            continue
 # show all for debug mode
 def show_stove_information(data) :
 
@@ -161,15 +166,80 @@ def show_stove_information(data) :
     #     #print(json_data, file=text_file)
     #     print(json.dumps(json_data, sort_keys=True), file=text_file)
     # return json_data
+
+
+def tosend_stove_information(data) :
+
+
+    lastConfirmedRevision = time.strftime('%d/%m/%Y %H:%M', time.localtime(data['lastConfirmedRevision']))
+    revision = time.strftime('%d/%m/%Y %H:%M', time.localtime(data['controls']['revision']))
+    if data['controls']['onOff'] :
+        jstovectl = "Online"
+    else :
+        jstovectl = "Offline"
+
+    if data['controls']['operatingMode'] == 0 :
+        jstovemode = "Manual"
+    elif data['controls']['operatingMode'] == 1 :
+        jstovemode = "Automatic"
+    elif data['controls']['operatingMode'] == 2 :
+        jstovemode = "Comfort"
+    if data['sensors']['statusMainState'] == 1 :
+        if data['sensors']['statusSubState'] == 0 :
+            jstove = "Off"
+        elif data['sensors']['statusSubState'] == 1 or data['sensors']['statusSubState'] == 3:
+            jstove = "Standby"
+        elif data['sensors']['statusSubState'] == 2 :
+            jstove = "External Command"
+        else :
+            jstove = "UnKnown State"
+    elif data['sensors']['statusMainState'] == 2 :
+        jstove = "Waking Up"
+    elif data['sensors']['statusMainState'] == 3 :
+        jstove = "Starting"
+    elif data['sensors']['statusMainState'] == 4 :
+        jstove = "Burning (control mode)"
+    elif data['sensors']['statusMainState'] == 5 :
+        if data['sensors']['statusSubState'] == 3 or data['sensors']['statusSubState'] == 4 :
+            jstove = "Deep Cleaning"
+        else :
+            jstove = "Cleaning"
+    elif data['sensors']['statusMainState'] == 6 :
+        jstove = "Burn Off"
+    else :
+        jstove = "Unknown Stove State"
+
+    pellets_bags = round((int(data["sensors"]["parameterFeedRateTotal"]) / 15), 2)
+
+    json_data = {"SENSOR":{"check_time": current_time, "stove_status": jstove, "heating_power": int(data["controls"]["heatingPower"]), "room_temp": int(data["sensors"]["inputRoomTemperature"]), "flame_temp": data["sensors"]["inputFlameTemperature"], "pellets_used": data["sensors"]["parameterFeedRateTotal"], "pellets_time": data["sensors"]["parameterRuntimePellets"], "pellets_before_service": data["sensors"]["parameterFeedRateService"], "diag_motor": data["sensors"]["outputDischargeMotor"],"fan_velocity": data["sensors"]["outputIDFan"]}, "STATE":{"fan1_active": data["controls"]["convectionFan1Active"], "fan1_level": data["controls"]["convectionFan1Level"], "fan1_area": data["controls"]["convectionFan1Area"], "fan2_active": data["controls"]["convectionFan2Active"], "fan2_level": data["controls"]["convectionFan2Level"], "fan2_area": data["controls"]["convectionFan2Area"], "frost_protection_active": data["controls"]["frostProtectionActive"], "front_protection_temp": data["controls"]["frostProtectionTemperature"], "stove_status": jstovectl, "revision_date": time.strftime("%d/%m/%Y"), "revision_time": time.strftime("%H:%M"), "operating_mode": jstovemode, "target_temp": int(data["controls"]["targetTemperature"]), "protection_temp": data["controls"]["setBackTemperature"]}}
+    #print(json.dumps(json_data, sort_keys=True, indent=2))
+    with open(json_path, 'w') as text_file:
+        #print(json_data, file=text_file)
+        print(json.dumps(json_data, sort_keys=True), file=text_file)
+    return json_data    
 # MQTT connect
 def on_connect(client, userdata, flags, rc):
-    client.subscribe(topicreceiver)
-    if rc==0:
-        client.connected_flag=True #set flag
-        print(Fore.WHITE + "                                      : " + Fore.GREEN + "Connected!" + Fore.RESET)
-    else:
-        print(Fore.RED + "               Bad connection Returned code=" + Fore.RESET,rc)
-# On each MQTT message         
+    if client.connected_flag == False :
+        client.subscribe(topicreceiver)
+        if rc==0:
+            client.connected_flag=True #set flag
+            print(Fore.WHITE + "                                      : " + Fore.GREEN + "Connected!" + Fore.RESET)
+        else:
+            print(Fore.RED + "               Bad connection Returned code=" + Fore.RESET,rc)
+# On each MQTT message   
+def senddata_to_mqtt():
+        # Get information
+    stove_infos = get_stove_information(clientrika, url_base, url_api, stove)
+    data = tosend_stove_information(stove_infos)
+    data_out = json.dumps(data, sort_keys=True)
+    time.sleep(3)
+    print("               Sending MQTT data      : Please wait...")
+    client.publish(topicpublisher,data_out)
+    print(Fore.WHITE + "                                      : " + Fore.GREEN + "MQTT Sent" + Fore.RESET)
+    time.sleep(2)
+    print(Fore.CYAN + "Process done !" + Fore.RESET)
+    time.sleep(time_between_send) 
+    
 def on_message(client, userdata, msg):
     payload = json.loads(msg.payload)
     actual = get_stove_information(clientrika, url_base, url_api, stove)
@@ -201,11 +271,11 @@ def on_message(client, userdata, msg):
         parameter = "targetTemperature"
         value = payload[parameter]
         data[parameter] = int(value)       
-    # 'ecoMode': False, 
-    if "ecoMode" in payload:
-        parameter = "ecoMode"
-        value = payload[parameter]
-        data[parameter] = bool(value)
+    # # 'ecoMode': False, 
+    # if "ecoMode" in payload:
+    #     parameter = "ecoMode"
+    #     value = payload[parameter]
+    #     data[parameter] = bool(value)
     # # 'heatingTimeMon1': '00000000', 
     # if "heatingTimeMon1" in payload:
     #     parameter = "heatingTimeMon1"
@@ -326,41 +396,41 @@ def on_message(client, userdata, msg):
         parameter ="frostProtectionTemperature"
         value = payload[parameter]
         data[parameter] = int(value)
-    # 'temperatureOffset': '0', 
-    if "temperatureOffset" in payload:
-        parameter ="temperatureOffset"
-        value = payload[parameter]
-        data[parameter] = int(value)
-    # 'RoomPowerRequest': 0, 
-    if "RoomPowerRequest" in payload:
-        parameter ="RoomPowerRequest"
-        value = payload[parameter]
-        data[parameter] = int(value)
-    # 'debug0': 0, 
-    if "debug0" in payload:
-        parameter ="debug0"
-        value = payload[parameter]
-        data[parameter] = int(value) 
-    # 'debug1': 0, 
-    if "debug1" in payload:
-        parameter ="debug1"
-        value = payload[parameter]
-        data[parameter] = int(value)
-    # 'debug2': 0, 
-    if "debug2" in payload:
-        parameter ="debug2"
-        value = payload[parameter]
-        data[parameter] = int(value)
-    # 'debug3': 0, 
-    if "debug3" in payload:
-        parameter ="debug3"
-        value = payload[parameter]
-        data[parameter] = int(value)
-    # 'debug4': 0
-    if "debug4" in payload:
-        parameter ="debug4"
-        value = payload[parameter]
-        data[parameter] = int(value)
+    # # 'temperatureOffset': '0', 
+    # if "temperatureOffset" in payload:
+    #     parameter ="temperatureOffset"
+    #     value = payload[parameter]
+    #     data[parameter] = int(value)
+    # # 'RoomPowerRequest': 0, 
+    # if "RoomPowerRequest" in payload:
+    #     parameter ="RoomPowerRequest"
+    #     value = payload[parameter]
+    #     data[parameter] = int(value)
+    # # 'debug0': 0, 
+    # if "debug0" in payload:
+    #     parameter ="debug0"
+    #     value = payload[parameter]
+    #     data[parameter] = int(value) 
+    # # 'debug1': 0, 
+    # if "debug1" in payload:
+    #     parameter ="debug1"
+    #     value = payload[parameter]
+    #     data[parameter] = int(value)
+    # # 'debug2': 0, 
+    # if "debug2" in payload:
+    #     parameter ="debug2"
+    #     value = payload[parameter]
+    #     data[parameter] = int(value)
+    # # 'debug3': 0, 
+    # if "debug3" in payload:
+    #     parameter ="debug3"
+    #     value = payload[parameter]
+    #     data[parameter] = int(value)
+    # # 'debug4': 0
+    # if "debug4" in payload:
+    #     parameter ="debug4"
+    #     value = payload[parameter]
+    #     data[parameter] = int(value)
     if parameter != 0:
         thread1 = send_to_stove(data)
         thread1.start()
@@ -440,16 +510,8 @@ if __name__ == "__main__":
     client.connect(mqtt_server)
     client.loop_start()
     while 1:
-            # Get information
-        stove_infos = get_stove_information(clientrika, url_base, url_api, stove)
-        data_out = json.dumps(stove_infos, sort_keys=True)
-        time.sleep(3)
-        print("               Sending MQTT data      : Please wait...")
-        client.publish(topicpublisher,data_out)
-        print(Fore.WHITE + "                                      : " + Fore.GREEN + "MQTT Sent" + Fore.RESET)
-        time.sleep(2)
-        print(Fore.CYAN + "Process done !" + Fore.RESET)
-        time.sleep(time_between_send)
+        senddata_to_mqtt()
+
 
     # To display result of the API, uncomment following line
     if config['system']['verbose'] == "True":
