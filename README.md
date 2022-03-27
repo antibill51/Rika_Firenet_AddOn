@@ -1,5 +1,6 @@
 # Rika_Firenet_AddOn
 
+## Outdated (New here : https://github.com/antibill51/rika-firenet-custom-component)
 
 File in /config/ :
 
